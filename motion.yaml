@@ -1,0 +1,123 @@
+# Home Assistant Blueprint: Motion-activated Light with Sun Condition, Minimum On-Time, and Trigger Delay
+#
+# Turns on a light when motion is detected for at least 2 seconds between sunset and sunrise.
+# The light stays on for a minimum of 30 seconds.
+# After the initial 30 seconds and after motion stops, the light stays on for an additional configurable duration.
+#
+blueprint:
+  name: Motion-activated Light (Min On-Time, Trigger Delay, Sun Condition) # Updated name
+  description: Turn on a light when motion is detected for 2s (between sunset/sunrise), keep it on for min 30s, then turn off after no motion. # Updated description
+  domain: automation
+  input:
+    motion_entity:
+      name: Motion Sensor
+      description: The binary sensor that detects motion.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+          multiple: false # Only one motion sensor allowed
+    light_target:
+      name: Light
+      description: The light(s) to control.
+      selector:
+        target:
+          entity:
+            domain: light # Target can be any light entity
+    no_motion_wait:
+      name: Wait time after no motion
+      description: Time (in seconds) to leave the light on after last motion is detected (this timer starts *after* the initial 30s minimum on-time).
+      default: 120 # Default 2 minutes
+      selector:
+        number:
+          min: 0.0
+          max: 3600.0 # Max 1 hour
+          unit_of_measurement: seconds
+          step: 1.0
+          mode: slider
+    sunset_offset:
+      name: Sunset offset (minutes)
+      description: Automation active X minutes after sunset (0 = at sunset, negative = before sunset).
+      default: 0 # Default is exactly at sunset
+      selector:
+        number:
+          min: -60.0 # Allow up to 1 hour before sunset
+          max: 240.0 # Allow up to 4 hours after sunset
+          unit_of_measurement: minutes
+          step: 1.0
+          mode: slider
+    sunrise_offset:
+      name: Sunrise offset (minutes)
+      description: Automation active until X minutes before sunrise (0 = at sunrise, negative = after sunrise).
+      default: 0 # Default is exactly at sunrise
+      selector:
+        number:
+          min: -60.0 # Allow up to 1 hour after sunrise
+          max: 240.0 # Allow up to 4 hours before sunrise
+          unit_of_measurement: minutes
+          step: 1.0
+          mode: slider
+  source_url: https://community.home-assistant.io/t/turn-light-on-and-off-based-on-detected-motion-with-sun-condition/266013 # Original source URL, modified logic
+
+# Automation Mode: 'restart'
+# This is crucial. If motion is detected again while the automation is running (e.g., during the delays),
+# the automation restarts from the beginning, effectively keeping the light on and resetting timers.
+mode: restart
+max_exceeded: silent # Prevents log warnings if the automation triggers rapidly
+
+trigger:
+  # Trigger when the motion sensor state changes FROM 'off' TO 'on'
+  # AND stays 'on' for at least 2 seconds.
+- platform: state
+  entity_id: !input motion_entity
+  from: 'off'
+  to: 'on'
+  for: #
+      seconds: 3
+
+condition:
+  # Conditions check if the automation should run based on time (sun position)
+  # It runs if it's either after sunset (plus offset) OR before sunrise (minus offset).
+- condition: or
+  conditions:
+    # Condition 1: After sunset
+  - condition: sun
+    after: sunset
+    after_offset:
+      minutes: !input sunset_offset # Use the input offset in minutes
+    # Condition 2: Before sunrise
+  - condition: sun
+    before: sunrise
+    before_offset:
+      minutes: !input sunrise_offset # Use the input offset in minutes
+
+action:
+  # Sequence of actions performed when the trigger fires and conditions are met.
+  # 1. Turn on the light(s).
+- service: light.turn_on
+  target: !input light_target
+
+  # 2. Wait for a fixed 30 seconds (minimum on-time).
+  #    Because mode is 'restart', if motion triggers again during this delay,
+  #    the automation restarts, ensuring the light stays on.
+- delay:
+    seconds: 30
+
+  # 3. Wait for the motion sensor to turn 'off' (no motion detected).
+  #    This only happens *after* the initial 30-second delay is complete.
+- wait_for_trigger:
+    platform: state
+    entity_id: !input motion_entity
+    from: 'on'
+    to: 'off'
+    # Optional: Add a 'timeout' here if you want the light to turn off even if the sensor never goes 'off'.
+    # timeout:
+    #   minutes: 30 # Example: turn off after 30 mins if sensor stays 'on'
+
+  # 4. Wait for the user-defined 'no_motion_wait' duration.
+  #    This delay starts *after* motion has stopped AND the initial 30s delay passed.
+- delay: !input no_motion_wait
+
+  # 5. Turn off the light(s).
+- service: light.turn_off
+  target: !input light_target
